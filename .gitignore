@@ -1,0 +1,56 @@
+# Private project article folder (never commit)
+env-new/
+.env-backup/
+*.env
+.env
+
+# AWS / build artifacts
+.aws-sam/
+samconfig.toml
+packaged.yaml
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# Logs & scratch
+*.log
+_generated/
+_scratch/
+
+# AI tools / assistants (configs, caches, local artifacts)
+.kiro/
+.cursor/
+.cursorignore
+.cursorrules
+.aider*
+.claude/
+CLAUDE.md
+.windsurf/
+.windsurfrules
+.continue/
+.github/copilot-instructions.md
+.codeium/
+.tabnine/
+.sourcegraph/
+.cody/
+.ai/
+.llm/
+.gemini/
+.gemini_key
+AGENTS.md
+.mcp.json
+.roo/
+.cline/
+.pear/
+.devin/

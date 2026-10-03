@@ -1,0 +1,198 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Quote Forge - a minimal Free-Tier serverless app. A single Lambda (arm64, 128MB)
+  behind a Lambda Function URL serves an HTML page and a /api quote endpoint, and
+  records a view counter in an on-demand DynamoDB table. No API Gateway, no S3/CloudFront.
+
+Resources:
+
+  QuoteTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: quote-forge-stats
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  QuoteFnRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: quote-forge-fn-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: dynamo-counter
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                Resource: !GetAtt QuoteTable.Arn
+
+  QuoteFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: quote-forge-fn
+      Runtime: python3.12
+      Handler: index.handler
+      Architectures:
+        - arm64
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt QuoteFnRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref QuoteTable
+      Code:
+        ZipFile: |
+          import json, os, random, datetime
+          import boto3
+
+          ddb = boto3.client("dynamodb")
+          TABLE = os.environ["TABLE_NAME"]
+
+          QUOTES = [
+              ("Simplicity is the soul of efficiency.", "Austin Freeman"),
+              ("Make it work, make it right, make it fast.", "Kent Beck"),
+              ("Premature optimization is the root of all evil.", "Donald Knuth"),
+              ("Programs must be written for people to read.", "Harold Abelson"),
+              ("The best way to predict the future is to invent it.", "Alan Kay"),
+              ("Deleted code is debugged code.", "Jeff Sickel"),
+              ("First, solve the problem. Then, write the code.", "John Johnson"),
+              ("Any sufficiently advanced bug is indistinguishable from a feature.", "Rich Kulawiec"),
+              ("Code is like humor. When you have to explain it, it is bad.", "Cory House"),
+              ("Weeks of coding can save you hours of planning.", "Anonymous"),
+          ]
+
+          def bump_counter():
+              try:
+                  r = ddb.update_item(
+                      TableName=TABLE,
+                      Key={"pk": {"S": "views"}},
+                      UpdateExpression="ADD #c :one",
+                      ExpressionAttributeNames={"#c": "count"},
+                      ExpressionAttributeValues={":one": {"N": "1"}},
+                      ReturnValues="UPDATED_NEW",
+                  )
+                  return int(r["Attributes"]["count"]["N"])
+              except Exception:
+                  return None
+
+          def pick_quote():
+              text, author = random.choice(QUOTES)
+              return {"quote": text, "author": author}
+
+          def json_resp(body, code=200):
+              return {
+                  "statusCode": code,
+                  "headers": {"content-type": "application/json",
+                              "access-control-allow-origin": "*"},
+                  "body": json.dumps(body),
+              }
+
+          def html_resp(views):
+              page = HTML.replace("__VIEWS__", str(views if views is not None else "-"))
+              return {
+                  "statusCode": 200,
+                  "headers": {"content-type": "text/html; charset=utf-8"},
+                  "body": page,
+              }
+
+          def handler(event, context):
+              raw = event.get("rawPath", "/")
+              views = bump_counter()
+              if raw.rstrip("/") == "/api":
+                  q = pick_quote()
+                  q["views"] = views
+                  q["served_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+                  return json_resp(q)
+              return html_resp(views)
+
+          HTML = """<!doctype html>
+          <html lang="en"><head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Quote Forge</title>
+          <style>
+            :root{--bg:#0f172a;--card:#1e293b;--accent:#38bdf8;--text:#e2e8f0;--muted:#94a3b8}
+            *{box-sizing:border-box}
+            body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);
+                 color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+            .card{background:var(--card);border:1px solid #334155;border-radius:16px;max-width:620px;
+                  width:100%;padding:40px;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+            h1{margin:0 0 4px;font-size:1.4rem;color:var(--accent);letter-spacing:.5px}
+            .sub{color:var(--muted);font-size:.85rem;margin-bottom:28px}
+            blockquote{margin:0;font-size:1.5rem;line-height:1.4;font-weight:600}
+            .author{margin-top:14px;color:var(--accent);font-size:1rem}
+            .row{margin-top:32px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+            button{background:var(--accent);color:#06283d;border:0;border-radius:10px;padding:12px 20px;
+                   font-size:1rem;font-weight:700;cursor:pointer}
+            button:hover{filter:brightness(1.1)}
+            .views{color:var(--muted);font-size:.85rem}
+            .badge{font-size:.7rem;color:var(--muted);margin-top:24px;text-align:center}
+          </style></head>
+          <body>
+            <div class="card">
+              <h1>&#9874; Quote Forge</h1>
+              <div class="sub">Serverless quotes on AWS Free Tier &mdash; Lambda Function URL + DynamoDB</div>
+              <blockquote id="q">Loading a quote&hellip;</blockquote>
+              <div class="author" id="a"></div>
+              <div class="row">
+                <button onclick="load()">New quote</button>
+                <span class="views">Total views served: <strong id="v">__VIEWS__</strong></span>
+              </div>
+              <div class="badge">Powered by one Lambda (arm64/128MB) + on-demand DynamoDB &bull; us-east-1</div>
+              <div class="badge">Built by Soumyadeep Mandal</div>
+            </div>
+            <script>
+              async function load(){
+                const r = await fetch('./api');
+                const d = await r.json();
+                document.getElementById('q').textContent = '\u201c' + d.quote + '\u201d';
+                document.getElementById('a').textContent = '\u2014 ' + d.author;
+                if(d.views!=null) document.getElementById('v').textContent = d.views;
+              }
+              load();
+            </script>
+          </body></html>"""
+
+  QuoteUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref QuoteFn
+      AuthType: NONE
+
+  QuoteUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref QuoteFn
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  QuoteLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/quote-forge-fn
+      RetentionInDays: 7
+
+Outputs:
+  SiteUrl:
+    Description: Public Function URL for Quote Forge
+    Value: !GetAtt QuoteUrl.FunctionUrl
+  TableName:
+    Description: DynamoDB table name
+    Value: !Ref QuoteTable
